@@ -1,0 +1,21 @@
+# Python / FastAPI
+api/.venv/
+api/__pycache__/
+api/**/*.pyc
+api/*.db
+
+# Node / React
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Env / secrets
+.env
+api/.env
+web/.env
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
