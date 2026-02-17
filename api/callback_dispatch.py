@@ -38,6 +38,7 @@ from config import CALLBACK_SIGNING_SECRET
 from database import SessionLocal
 from models.tenant import Tenant
 from models.tenant_auth import TenantAuth
+from models.message import Message
 from telethon_manager import build_client
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,47 @@ def _payload_from_event(tenant_id: uuid.UUID, event: events.NewMessage.Event) ->
     }
 
 
+async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> None:
+    """Save incoming message to database with username, phone_number, and chat_id."""
+    try:
+        msg = event.message
+        sender = event.sender
+        
+        # Extract username
+        username: str | None = None
+        if isinstance(sender, User) and getattr(sender, "username", None):
+            username = str(sender.username)
+        
+        # Extract phone number
+        phone_number: str | None = None
+        if isinstance(sender, User) and getattr(sender, "phone", None):
+            phone_number = str(sender.phone)
+        
+        # Extract other fields
+        chat_id: int = event.chat_id
+        message_id: int = getattr(msg, "id", 0) or 0
+        sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
+        text = (msg.text or "").strip() if msg.text else None
+        
+        # Save to database
+        with SessionLocal() as db:
+            message = Message(
+                tenant_id=tenant_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                username=username,
+                phone_number=phone_number,
+                text=text,
+                sender_id=sender_id,
+                date=msg.date,  # Telethon's msg.date is already a datetime object
+                incoming=True,
+            )
+            db.add(message)
+            db.commit()
+    except Exception as e:
+        logger.exception("Failed to save incoming message tenant_id=%s error=%s", tenant_id, e)
+
+
 async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
     client = build_client(tenant_id)
     async with _lock:
@@ -188,6 +230,8 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
     async def on_new_message(event: events.NewMessage.Event) -> None:
         payload = _payload_from_event(tenant_id, event)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
+        # Save message to database
+        asyncio.create_task(_save_incoming_message(tenant_id, event))
 
     try:
         await client.connect()

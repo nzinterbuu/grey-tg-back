@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import DATABASE_URL
-from models import Base, Tenant, TenantAuth
+from models import Base, Tenant, TenantAuth, Message
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -49,6 +49,65 @@ def init_db() -> None:
                 )
                 if r.fetchone() is None:
                     conn.execute(text(f"ALTER TABLE tenant_auth ADD COLUMN {col} {spec}"))
+                    conn.commit()
+            
+            # Message table migrations
+            # Check if message table exists
+            result = conn.execute(
+                text("""
+                    SELECT table_name 
+                    FROM information_schema.tables 
+                    WHERE table_name='message'
+                """)
+            )
+            if result.fetchone() is not None:
+                # Table exists, check for column migrations
+                
+                # Rename address to chat_id if address exists and chat_id doesn't
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='address'
+                    """)
+                )
+                has_address = result.fetchone() is not None
+                
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='chat_id'
+                    """)
+                )
+                has_chat_id = result.fetchone() is not None
+                
+                if has_address and not has_chat_id:
+                    conn.execute(text("ALTER TABLE message RENAME COLUMN address TO chat_id"))
+                    conn.commit()
+                
+                # Add phone_number column if it doesn't exist
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='phone_number'
+                    """)
+                )
+                if result.fetchone() is None:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN phone_number VARCHAR(32)"))
+                    conn.commit()
+                
+                # Add username column if it doesn't exist
+                result = conn.execute(
+                    text("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='message' AND column_name='username'
+                    """)
+                )
+                if result.fetchone() is None:
+                    conn.execute(text("ALTER TABLE message ADD COLUMN username VARCHAR(255)"))
                     conn.commit()
     except Exception:
         # Column might already exist or table doesn't exist yet - ignore
