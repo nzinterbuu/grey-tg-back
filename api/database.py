@@ -10,6 +10,8 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    # Ensure message table exists (Message model must be imported so it's in Base.metadata)
+    Message.__table__.create(bind=engine, checkfirst=True)
     # Add missing columns if they don't exist (for existing databases)
     try:
         with engine.connect() as conn:

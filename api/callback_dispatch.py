@@ -26,6 +26,7 @@ import hmac
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -181,6 +182,13 @@ def _payload_from_event(tenant_id: uuid.UUID, event: events.NewMessage.Event) ->
     }
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Return timezone-aware datetime in UTC (Telethon uses naive UTC)."""
+    if dt.tzinfo is not None:
+        return dt
+    return dt.replace(tzinfo=timezone.utc)
+
+
 async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.Event) -> None:
     """Save incoming message to database with username, phone_number, and chat_id."""
     try:
@@ -202,8 +210,9 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
         message_id: int = getattr(msg, "id", 0) or 0
         sender_id: int | None = getattr(sender, "id", None) if sender else event.sender_id
         text = (msg.text or "").strip() if msg.text else None
+        date_utc = _ensure_utc(msg.date)
         
-        # Save to database
+        # Save to database (own session so we're not tied to request lifecycle)
         with SessionLocal() as db:
             message = Message(
                 tenant_id=tenant_id,
@@ -213,11 +222,18 @@ async def _save_incoming_message(tenant_id: uuid.UUID, event: events.NewMessage.
                 phone_number=phone_number,
                 text=text,
                 sender_id=sender_id,
-                date=msg.date,  # Telethon's msg.date is already a datetime object
+                date=date_utc,
                 incoming=True,
             )
             db.add(message)
             db.commit()
+            db.refresh(message)
+        logger.info(
+            "Saved incoming message tenant_id=%s chat_id=%s message_id=%s",
+            tenant_id,
+            chat_id,
+            message_id,
+        )
     except Exception as e:
         logger.exception("Failed to save incoming message tenant_id=%s error=%s", tenant_id, e)
 
@@ -230,8 +246,8 @@ async def _run_dispatcher(tenant_id: uuid.UUID, callback_url: str) -> None:
     async def on_new_message(event: events.NewMessage.Event) -> None:
         payload = _payload_from_event(tenant_id, event)
         asyncio.create_task(_post_callback(callback_url, payload, tenant_id))
-        # Save message to database
-        asyncio.create_task(_save_incoming_message(tenant_id, event))
+        # Save message to database (await so it runs before handler returns and event is still valid)
+        await _save_incoming_message(tenant_id, event)
 
     try:
         await client.connect()

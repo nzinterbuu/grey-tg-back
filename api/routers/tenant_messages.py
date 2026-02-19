@@ -10,6 +10,7 @@ else PHONE_NOT_IN_CONTACTS or PHONE_NOT_IN_CONTACTS_OR_NOT_ON_TELEGRAM.
 """
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from telethon import errors as tg_errors
 from telethon.tl.types import User
 
-from database import get_session
+from database import get_session, SessionLocal
 from models.tenant import Tenant
 from models.message import Message
 from peer_resolver import resolve_peer
@@ -128,42 +129,41 @@ async def send_message(
 
         date_str = msg.date.isoformat() if hasattr(msg.date, "isoformat") else str(msg.date)
         
-        # Save outbound message to database
+        # Save outbound message to database (dedicated session so commit is always persisted)
         try:
-            # Extract username and phone_number from entity
-            username: str | None = None
-            phone_number: str | None = None
-            chat_id: int | None = None
-            
+            username = None
+            phone_number = None
+            chat_id = getattr(entity, "id", None)
             if isinstance(entity, User):
-                username = getattr(entity, "username", None)
-                if username:
-                    username = str(username)
-                phone_number = getattr(entity, "phone", None)
-                if phone_number:
-                    phone_number = str(phone_number)
+                un = getattr(entity, "username", None)
+                username = str(un) if un else None
+                ph = getattr(entity, "phone", None)
+                phone_number = str(ph) if ph else None
                 chat_id = entity.id
-            else:
-                # For Chat or Channel, use entity.id as chat_id
-                chat_id = getattr(entity, "id", None)
-            
             if chat_id is not None:
-                message = Message(
-                    tenant_id=tenant_id,
-                    chat_id=chat_id,
-                    message_id=msg.id,
-                    username=username,
-                    phone_number=phone_number,
-                    text=body.text,
-                    sender_id=None,  # Outbound messages don't have a sender_id
-                    date=msg.date,
-                    incoming=False,
+                date_utc = msg.date if (getattr(msg.date, "tzinfo", None) is not None) else msg.date.replace(tzinfo=timezone.utc)
+                with SessionLocal() as session:
+                    message = Message(
+                        tenant_id=tenant_id,
+                        chat_id=chat_id,
+                        message_id=msg.id,
+                        username=username,
+                        phone_number=phone_number,
+                        text=body.text,
+                        sender_id=None,
+                        date=date_utc,
+                        incoming=False,
+                    )
+                    session.add(message)
+                    session.commit()
+                logger.info(
+                    "Saved outbound message tenant_id=%s chat_id=%s message_id=%s",
+                    tenant_id,
+                    chat_id,
+                    msg.id,
                 )
-                db.add(message)
-                db.commit()
         except Exception as e:
             logger.exception("Failed to save outbound message tenant_id=%s error=%s", tenant_id, e)
-            # Don't fail the request if saving to DB fails
         
         return SendMessageResponse(
             ok=True,
